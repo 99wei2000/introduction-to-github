@@ -1,0 +1,221 @@
+module mu_2(
+    input   i_clk,
+    input   i_rst,
+
+    output signed [51:0] o_x,  // 52位输出
+    output signed [51:0] o_y,
+    output signed [51:0] o_z,
+    output signed [51:0] o_w
+);
+
+// fix52_40
+reg signed [51:0] x_0, y_0, z_0, w_0;  // 52位寄存器
+// 参数
+wire signed [51:0] a, b, c, k, d, h, b1;
+
+// 参数
+// 参数定义（修正后的定点数值）
+assign a = 52'd10995116277760;   // 10.0 (fix52_40: 10 << 40)
+assign b = 52'd219023255552 + 52'd2932031007402;  // 8/3
+assign c = 52'd30786325577728;  // 28.0
+assign k = 52'd20890720927744 + 52'd989560464998; // 19.9
+assign d = 52'd4398046511104 + 52'd769658139443;//d=4.7
+assign h = 52'd1099511628;        // 0.001 (fix52_40: 0.01 * 2^40)
+assign b1 = 52'd1099511627776;   // 1
+// fix52_40
+reg signed [51:0] x_n, y_n, z_n, w_n;
+reg signed [51:0] x_next, y_next, z_next, w_next;
+reg signed [51:0] h_1, h_2, h_3, h_4;
+reg signed [103:0] afy_104, agx_104, cgx_104, bz_104, dgx_104;
+reg signed [155:0] kzgx_156, kgxfy_156;
+reg signed [51:0] ro_x, ro_y, ro_z, ro_w;
+reg signed [103:0] H_1         ;
+reg signed [103:0] H_2         ;
+reg signed [103:0] H_3         ;
+reg signed [103:0] H_4         ;
+// 计算gx和fy的信号
+reg signed [51:0] gx, fy;
+
+assign o_x = ro_x;
+assign o_y = ro_y;
+assign o_z = ro_z;
+assign o_w = ro_w;
+
+// 定义一个简单的sgn函数，返回52位结果
+function signed [51:0] sgn(input signed [51:0] x);
+    if (x > 52'd0)
+        sgn = 52'd1099511627776;  // 1 in fix52_40
+    else if (x < 52'd0)
+        sgn = -52'd1099511627776; // -1 in fix52_40
+    else
+        sgn = 52'd0;              // 0
+endfunction
+
+// 状态机
+reg [7:0] r_st_current;
+reg [7:0] r_st_next;
+reg flag;
+
+localparam P_IDLE = 0,  // 初始/空闲状态
+           S1     = 1,   // 状态1：寄存器更新
+           S2     = 2,   // 状态2：计算乘积项
+           S3     = 3,   // 状态3：计算中间值h_
+           S4     = 4,   // 状态4：计算H_（h * h_）
+           S5     = 5,   // 状态5：欧拉法更新x_next
+           S6     = 6,   // 状态6：更新最终值
+           S7     = 7;   // 状态7：准备下一周期
+
+// 状态机更新
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst)
+        r_st_current <= P_IDLE;
+    else
+        r_st_current <= r_st_next;
+end
+
+// 状态机过渡逻辑
+always @(*) begin
+    case (r_st_current)
+        P_IDLE: r_st_next = S1;
+        S1:     r_st_next = S2;
+        S2:     r_st_next = S3;
+        S3:     r_st_next = S4;
+        S4:     r_st_next = S5;
+        S5:     r_st_next = S6;
+        S6:     r_st_next = S7;
+        S7:     r_st_next = S1;
+        default: r_st_next = P_IDLE;
+    endcase
+end
+
+// x_0, y_0, z_0, w_0 初始化
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        x_0 <= 52'd109951162778; // 0.01
+        y_0 <= 52'd109951162778; // 0.01
+        z_0 <= 52'd10995116278; // 0.01
+        w_0 <= 52'd10995116278; // 0.01
+    end else if (r_st_current == S7) begin
+        x_0 <= x_n;
+        y_0 <= y_n;
+        z_0 <= z_n;
+        w_0 <= w_n;
+    end
+end
+
+// x_n, y_n, z_n, w_n 更新
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        x_n <= 'd0;
+        y_n <= 'd0;
+        z_n <= 'd0;
+        w_n <= 'd0;
+        flag <= 1'd0;
+    end else if (r_st_current == S1) begin
+        x_n <= x_0;
+        y_n <= y_0;
+        z_n <= z_0;
+        w_n <= w_0;
+        flag <= 1'd1;
+    end else if (r_st_current == S6) begin
+        x_n <= x_next;
+        y_n <= y_next;
+        z_n <= z_next;
+        w_n <= w_next;
+        flag <= 1'd0;
+    end
+end
+
+// 计算gx和fy
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        gx <= 0;
+        fy <= 0;
+    end else begin
+        gx <= x_n - sgn(x_n - b1) - sgn(x_n + b1);  // b1 = 1
+        fy <= y_n - sgn(y_n - b1) - sgn(y_n + b1);
+    end
+end
+
+// 计算乘积项 afy_104, agx_104 等
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        afy_104 <= 'd0;
+        agx_104 <= 'd0;
+        cgx_104 <= 'd0;
+        bz_104 <= 'd0;
+        dgx_104 <= 'd0;
+        kzgx_156 <= 'd0;
+        kgxfy_156 <= 'd0;
+    end else if (r_st_current == S2) begin
+        afy_104 <= a * fy;
+        agx_104 <= a * gx;
+        cgx_104 <= c * gx;
+        bz_104 <= b * z_n;
+        dgx_104 <= d * gx;
+        kzgx_156 <= k * z_n * gx;
+        kgxfy_156 <= k * gx * fy;
+    end
+end
+
+// 计算中间值 h_
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        h_1 <= 'd0;
+        h_2 <= 'd0;
+        h_3 <= 'd0;
+        h_4 <= 'd0;
+    end else if (r_st_current == S3) begin
+        h_1 <= {afy_104[103], afy_104[90:80], afy_104[79:40]} - {agx_104[103], agx_104[90:80], agx_104[79:40]};
+        h_2 <= {cgx_104[103], cgx_104[90:80], cgx_104[79:40]} - fy - {kzgx_156[155], kzgx_156[130:120], kzgx_156[119:80]} + w_n;
+        h_3 <= {kgxfy_156[155], kgxfy_156[130:120], kgxfy_156[119:80]} - {bz_104[103], bz_104[90:80], bz_104[79:40]};
+        h_4 <= -{dgx_104[103], dgx_104[90:80], dgx_104[79:40]};
+    end
+end
+
+// 计算最终值 H_
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        H_1 <= 'd0;
+        H_2 <= 'd0;
+        H_3 <= 'd0;
+        H_4 <= 'd0;
+    end else if (r_st_current == S4) begin
+        H_1 <= h * h_1;
+        H_2 <= h * h_2;
+        H_3 <= h * h_3;
+        H_4 <= h * h_4;
+    end
+end
+
+// 更新 x_next, y_next, z_next, w_next
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        x_next <= 'd0;
+        y_next <= 'd0;
+        z_next <= 'd0;
+        w_next <= 'd0;
+    end else if (r_st_current == S5) begin
+        x_next <= x_n + {H_1[103], H_1[90:80], H_1[79:40]};
+        y_next <= y_n + {H_2[103], H_2[90:80], H_2[79:40]};
+        z_next <= z_n + {H_3[103], H_3[90:80], H_3[79:40]};
+        w_next <= w_n + {H_4[103], H_4[90:80], H_4[79:40]};
+    end
+end
+
+// 更新输出
+always @(posedge i_clk or posedge i_rst) begin
+    if (i_rst) begin
+        ro_x <= 'd0;
+        ro_y <= 'd0;
+        ro_z <= 'd0;
+        ro_w <= 'd0;
+    end else if (flag == 1) begin
+        ro_x <= x_n;
+        ro_y <= y_n;
+        ro_z <= z_n;
+        ro_w <= w_n;
+    end
+end
+
+endmodule
